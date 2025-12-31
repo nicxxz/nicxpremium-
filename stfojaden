@@ -1,0 +1,1413 @@
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local Lighting = game:GetService("Lighting")
+local Workspace = game:GetService("Workspace")
+local LocalPlayer = Players.LocalPlayer
+local CoreGui = game:GetService("CoreGui")
+local HttpService = game:GetService("HttpService")
+
+-- ===== SETTINGS =====
+local GUI_HIDE_KEY = Enum.KeyCode.LeftControl
+
+-- Admin IDs
+local ADMIN_USER_IDS = {
+    328486719, 972668671, 197869863, 8930534114, 1247054703, 
+    619604235, 90307765, 87122720, 198930179, 111535077, 
+    36144204, 2714087123, 472824, 19559323, 307978637, 
+    553816548, 25685544, 38065013, 64881507, 2021922656
+}
+
+-- REACH Variables
+_G.Reach = 0  -- Set to 0 by default
+_G.ReachOff = true  -- Off by default
+_G.AutoClicker = false
+
+-- Settings Variables
+local chasing = false
+local targetName = ""
+local currentTarget = nil
+local keepDistance = 3
+local antiIdleEnabled = true
+
+-- Mod Detection
+local lastModCheck = 0
+local modCheckInterval = 30 -- Check every 30 seconds
+local detectedMods = {}
+
+-- Legit Aiming Variables
+local legitSettings = {
+    Enabled = true,
+    Mode = "Balanced",
+    MaxDistance = 12,
+    Smoothness = 0.3,
+    AimHeight = 2.5,
+    ActivationKey = Enum.KeyCode.Q,
+    IgnoreDead = true,
+    JiggleEnabled = true,
+    JiggleIntensity = 1.5,
+    JiggleSpeed = 12,
+    JiggleRange = 1.0,
+    MinDistance = 3,
+    LockSpeed = 0.3
+}
+
+local activationKeyDown = false
+local changingKeybind = false
+local time = 0
+
+-- GUI References
+local ScreenGui, MainFrame
+local LegitContent, ReachContent, QuickTPContent, ServerSettingsContent
+local PlayerList, StopViewBtn
+local ServerSettingsStatus
+
+-- ===== HELPER FUNCTIONS =====
+local function showNotification(message, color)
+    local notifGui = Instance.new("ScreenGui")
+    notifGui.Name = "Notification"
+    notifGui.Parent = CoreGui
+    
+    local frame = Instance.new("Frame")
+    frame.Size = UDim2.new(0, 320, 0, 60)
+    frame.Position = UDim2.new(0.5, -160, 0.2, 0)
+    frame.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
+    frame.BackgroundTransparency = 0.1
+    frame.BorderSizePixel = 0
+    frame.Parent = notifGui
+    
+    local notifCorner = Instance.new("UICorner")
+    notifCorner.CornerRadius = UDim.new(0, 10)
+    notifCorner.Parent = frame
+    
+    local notifStroke = Instance.new("UIStroke")
+    notifStroke.Color = color
+    notifStroke.Thickness = 3
+    notifStroke.Parent = frame
+    
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(1, -10, 1, -10)
+    label.Position = UDim2.new(0, 5, 0, 5)
+    label.BackgroundTransparency = 1
+    label.Text = message
+    label.TextColor3 = color
+    label.Font = Enum.Font.GothamBold
+    label.TextSize = 14
+    label.TextWrapped = true
+    label.Parent = frame
+    
+    -- Animate in
+    frame.Position = UDim2.new(0.5, -160, 0, -80)
+    local tweenIn = TweenService:Create(frame, TweenInfo.new(0.5), {Position = UDim2.new(0.5, -160, 0.2, 0)})
+    tweenIn:Play()
+    
+    -- Remove after delay
+    delay(4, function()
+        local tweenOut = TweenService:Create(frame, TweenInfo.new(0.5), {Position = UDim2.new(0.5, -160, 0, -80)})
+        tweenOut:Play()
+        tweenOut.Completed:Wait()
+        notifGui:Destroy()
+    end)
+end
+
+-- ===== MOD DETECTION SYSTEM =====
+local function checkForMods()
+    local currentMods = {}
+    local newModsFound = false
+    
+    for _, otherPlayer in pairs(Players:GetPlayers()) do
+        if otherPlayer ~= LocalPlayer then
+            for _, adminId in pairs(ADMIN_USER_IDS) do
+                if otherPlayer.UserId == adminId then
+                    table.insert(currentMods, otherPlayer.Name)
+                    
+                    -- Check if this mod is newly detected
+                    if not detectedMods[otherPlayer.Name] then
+                        newModsFound = true
+                        detectedMods[otherPlayer.Name] = true
+                    end
+                    break
+                end
+            end
+        end
+    end
+    
+    -- Only notify if new mods are found
+    if newModsFound and #currentMods > 0 then
+        showNotification("MOD DETECTED: " .. table.concat(currentMods, ", "), Color3.fromRGB(255, 100, 100))
+    end
+    
+    -- Update ServerSettingsStatus if available
+    if ServerSettingsStatus then
+        if #currentMods > 0 then
+            ServerSettingsStatus.Text = "MODS IN SERVER:\n" .. table.concat(currentMods, "\n")
+            ServerSettingsStatus.TextColor3 = Color3.fromRGB(255, 100, 100)
+        else
+            ServerSettingsStatus.Text = "No mods detected\nAuto-checking every 30s"
+            ServerSettingsStatus.TextColor3 = Color3.fromRGB(100, 255, 100)
+        end
+    end
+    
+    return #currentMods
+end
+
+-- ===== NICX PREMIUM FUNCTIONS =====
+local function playExecuteSound()
+    local sound = Instance.new("Sound")
+    sound.SoundId = "rbxassetid://104820311651633"
+    sound.Volume = 0.3
+    sound.Parent = workspace
+    sound:Play()
+    game:GetService("Debris"):AddItem(sound, 3)
+end
+
+-- Auto-Chase Functions
+local function findTarget(name)
+    if not name or name == "" then return nil end
+    name = name:lower()
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer then
+            if (p.Name:lower() == name) or (p.DisplayName:lower() == name) then
+                if p.Character and p.Character:FindFirstChild("HumanoidRootPart") then
+                    return p.Character
+                end
+            end
+        end
+    end
+    for _, obj in ipairs(Workspace:GetChildren()) do
+        if obj:IsA("Model") and obj.Name:lower() == name then
+            if obj:FindFirstChild("HumanoidRootPart") then
+                return obj
+            end
+        end
+    end
+    return nil
+end
+
+local function moveToTarget(target)
+    if not target or not LocalPlayer.Character then return end
+    local humanoid = LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+    local root = LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    if not humanoid or not root then return end
+    
+    local tPart = target:FindFirstChild("HumanoidRootPart") or target.PrimaryPart
+    if not tPart then return end
+    local dist = (tPart.Position - root.Position).Magnitude
+    if dist > keepDistance then
+        humanoid:MoveTo(tPart.Position)
+    end
+end
+
+local function startChase(name)
+    targetName = name
+    local target = findTarget(targetName)
+    if target then
+        currentTarget = target
+        chasing = true
+        if ServerSettingsStatus then
+            ServerSettingsStatus.Text = "Chasing: " .. name
+        end
+
+        local humanoid = target:FindFirstChildOfClass("Humanoid")
+        if humanoid then
+            humanoid.Died:Connect(function()
+                task.wait(1)
+                currentTarget = findTarget(targetName)
+            end)
+        end
+    else
+        if ServerSettingsStatus then
+            ServerSettingsStatus.Text = "Target not found: " .. name
+        end
+    end
+end
+
+local function stopChase()
+    chasing = false
+    currentTarget = nil
+    if LocalPlayer.Character then
+        local humanoid = LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+        local root = LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+        if humanoid and root then
+            humanoid:MoveTo(root.Position)
+        end
+    end
+    if ServerSettingsStatus then
+        ServerSettingsStatus.Text = "Chase stopped\nAnti-Idle: Enabled"
+    end
+end
+
+-- Graphics Functions
+local function applyLowGraphics()
+    Lighting.GlobalShadows = false
+    Lighting.FogEnd = 100000
+    Lighting.FogStart = 0
+    Lighting.Brightness = 2
+    Lighting.OutdoorAmbient = Color3.fromRGB(128,128,128)
+    Lighting.ClockTime = 14
+
+    -- Disable particles/trails
+    Workspace.DescendantAdded:Connect(function(obj)
+        if obj:IsA("ParticleEmitter") or obj:IsA("Trail") then
+            obj.Enabled = false
+        end
+    end)
+    
+    for _, obj in ipairs(Workspace:GetDescendants()) do
+        if obj:IsA("ParticleEmitter") or obj:IsA("Trail") then
+            obj.Enabled = false
+        end
+    end
+
+    -- Lower part quality
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr.Character then
+            for _, part in ipairs(plr.Character:GetDescendants()) do
+                if part:IsA("BasePart") then
+                    part.Material = Enum.Material.SmoothPlastic
+                    part.Reflectance = 0
+                end
+            end
+        end
+    end
+
+    Workspace.CurrentCamera.FieldOfView = 70
+    pcall(function()
+        if Lighting:FindFirstChildOfClass("BlurEffect") then
+            Lighting:FindFirstChildOfClass("BlurEffect"):Destroy()
+        end
+        if Lighting:FindFirstChildOfClass("BloomEffect") then
+            Lighting:FindFirstChildOfClass("BloomEffect"):Destroy()
+        end
+        if Lighting:FindFirstChildOfClass("SunRaysEffect") then
+            Lighting:FindFirstChildOfClass("SunRaysEffect"):Destroy()
+        end
+    end)
+    
+    if LowGraphicsBtn then
+        LowGraphicsBtn.BackgroundColor3 = Color3.fromRGB(60, 120, 60)
+    end
+    if ServerSettingsStatus then
+        ServerSettingsStatus.Text = "Low graphics settings applied\nAnti-Idle: Enabled"
+    end
+end
+
+local function setupAntiIdle()
+    LocalPlayer.Idled:Connect(function()
+        if antiIdleEnabled then
+            local vu = game:GetService("VirtualUser")
+            vu:CaptureController()
+            vu:ClickButton1(Vector2.new(0,0))
+        end
+    end)
+end
+
+-- Server Functions
+local function generateServerLink()
+    local placeId = game.PlaceId
+    local jobId = game.JobId
+    
+    if placeId and jobId then
+        local serverLink = "https://www.roblox.com/games/" .. placeId .. "/?jobId=" .. jobId
+        if ServerSettingsStatus then
+            ServerSettingsStatus.Text = "Server Link generated\nCheck console (F9) for copy"
+            ServerSettingsStatus.TextColor3 = Color3.fromRGB(180, 230, 255)
+        end
+        
+        print("=== SERVER JOIN LINK ===")
+        print(serverLink)
+        print("========================")
+        
+        -- Try to copy to clipboard
+        pcall(function()
+            setclipboard(serverLink)
+        end)
+    else
+        if ServerSettingsStatus then
+            ServerSettingsStatus.Text = "Could not generate server link"
+            ServerSettingsStatus.TextColor3 = Color3.fromRGB(255, 100, 100)
+        end
+    end
+end
+
+-- Legit Aiming Functions
+local function isPlayerAlive(playerCharacter)
+    if not playerCharacter then return false end
+    local humanoid = playerCharacter:FindFirstChild("Humanoid")
+    return humanoid and humanoid.Health > 0
+end
+
+local function findClosestTarget()
+    local closestPlayer = nil
+    local closestDistance = legitSettings.MaxDistance
+    
+    if not LocalPlayer.Character then return nil end
+    
+    local playerRoot = LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    if not playerRoot then return nil end
+    
+    for _, otherPlayer in pairs(Players:GetPlayers()) do
+        if otherPlayer ~= LocalPlayer and otherPlayer.Character then
+            if legitSettings.IgnoreDead and not isPlayerAlive(otherPlayer.Character) then
+                continue
+            end
+            
+            local targetPart = otherPlayer.Character:FindFirstChild("HumanoidRootPart")
+            if targetPart then
+                local distance = (playerRoot.Position - targetPart.Position).Magnitude
+                
+                if distance < closestDistance and distance >= legitSettings.MinDistance then
+                    closestDistance = distance
+                    closestPlayer = otherPlayer
+                end
+            end
+        end
+    end
+    
+    return closestPlayer, closestDistance
+end
+
+local function getAimPosition(targetCharacter)
+    if not targetCharacter then return nil end
+    
+    local rootPart = targetCharacter:FindFirstChild("HumanoidRootPart")
+    if not rootPart then return nil end
+    
+    return rootPart.Position + Vector3.new(0, legitSettings.AimHeight, 0)
+end
+
+local function smoothAimAt(targetPosition, currentCFrame)
+    local currentLook = currentCFrame.LookVector
+    local targetLook = (targetPosition - currentCFrame.Position).Unit
+    
+    local smoothLook = currentLook:Lerp(targetLook, legitSettings.Smoothness * legitSettings.LockSpeed)
+    return CFrame.lookAt(currentCFrame.Position, currentCFrame.Position + smoothLook)
+end
+
+local function applyJiggleEffect(targetPosition, currentCFrame, time)
+    local baseCFrame = smoothAimAt(targetPosition, currentCFrame)
+    
+    if not legitSettings.JiggleEnabled then
+        return baseCFrame
+    end
+    
+    local jiggleOffset = math.sin(time * legitSettings.JiggleSpeed) * legitSettings.JiggleIntensity * legitSettings.JiggleRange
+    local rightVector = baseCFrame.RightVector
+    
+    local jiggledPosition = baseCFrame.Position + (rightVector * jiggleOffset)
+    local targetDirection = (targetPosition - jiggledPosition).Unit
+    return CFrame.lookAt(jiggledPosition, jiggledPosition + targetDirection)
+end
+
+local function applyModeSettings(mode)
+    if mode == "Balanced" then
+        legitSettings.Smoothness = 0.3
+        legitSettings.JiggleIntensity = 1.5
+        legitSettings.LockSpeed = 0.3
+    elseif mode == "Aggressive" then
+        legitSettings.Smoothness = 0.5
+        legitSettings.JiggleIntensity = 2.5
+        legitSettings.LockSpeed = 0.5
+    elseif mode == "Direct" then
+        legitSettings.Smoothness = 0.7
+        legitSettings.JiggleIntensity = 3.5
+        legitSettings.LockSpeed = 0.8
+    end
+    
+    if SmoothnessBox then
+        SmoothnessBox.Text = tostring(legitSettings.Smoothness)
+        JiggleBox.Text = tostring(legitSettings.JiggleIntensity)
+    end
+    if SmoothnessLabel then
+        SmoothnessLabel.Text = tostring(legitSettings.Smoothness)
+        JiggleLabel.Text = tostring(legitSettings.JiggleIntensity)
+    end
+end
+
+-- REACH Functions
+local reachConnection
+local function setupReach()
+    if reachConnection then
+        reachConnection:Disconnect()
+    end
+    
+    reachConnection = RunService.Stepped:Connect(function()
+        if _G.ReachOff then return end
+        pcall(function()
+            local character = LocalPlayer.Character
+            if not character then return end
+            
+            local Sword = character:FindFirstChildOfClass("Tool")
+            if Sword and Sword:FindFirstChild("Handle") then
+                for i,v in pairs(Players:GetPlayers()) do 
+                    if v ~= LocalPlayer and v.Character then
+                        local targetTorso = v.Character:FindFirstChild("Torso") or v.Character:FindFirstChild("UpperTorso")
+                        local charTorso = character:FindFirstChild("Torso") or character:FindFirstChild("UpperTorso")
+                        
+                        if targetTorso and charTorso then
+                            if (charTorso.Position - targetTorso.Position).Magnitude <= _G.Reach then
+                                local leftArm = v.Character:FindFirstChild("Left Arm") or v.Character:FindFirstChild("LeftUpperArm")
+                                local leftLeg = v.Character:FindFirstChild("Left Leg") or v.Character:FindFirstChild("LeftUpperLeg")
+                                
+                                if leftArm then
+                                    leftArm:BreakJoints()
+                                    leftArm.Transparency = 1
+                                    leftArm.CanCollide = false
+                                    leftArm.CFrame = character.HumanoidRootPart.CFrame * CFrame.new(1,0,-3.5)
+                                end
+                                
+                                if leftLeg then
+                                    leftLeg:BreakJoints()
+                                    leftLeg.Transparency = 1
+                                    leftLeg.CanCollide = false
+                                    leftLeg.CFrame = character.HumanoidRootPart.CFrame * CFrame.new(1,0,-3.5)
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end)
+    end)
+end
+
+-- Auto Clicker
+local autoClickerConnection
+local function setupAutoClicker()
+    if autoClickerConnection then
+        autoClickerConnection:Disconnect()
+    end
+    
+    autoClickerConnection = RunService.Heartbeat:Connect(function()
+        if _G.AutoClicker then
+            pcall(function()
+                local character = LocalPlayer.Character
+                if not character then return end
+                
+                local Sword = character:FindFirstChildOfClass("Tool")
+                if Sword then
+                    Sword:Activate()
+                end
+            end)
+        end
+    end)
+end
+
+-- Quick TP Functions
+local function updatePlayerList(search)
+    if not PlayerList then return end
+    
+    for _, child in pairs(PlayerList:GetChildren()) do
+        if child:IsA("Frame") then child:Destroy() end
+    end
+    
+    local count = 0
+    for _, player in pairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer then
+            local name = player.Name:lower()
+            local searchText = search and search:lower() or ""
+            
+            if search == "" or name:find(searchText, 1, true) then
+                count = count + 1
+                
+                local Entry = Instance.new("Frame")
+                Entry.Size = UDim2.new(1, 0, 0, 30)
+                Entry.BackgroundColor3 = Color3.fromRGB(45, 45, 50)
+                Entry.BorderSizePixel = 0
+                Entry.Parent = PlayerList
+                
+                local NameLabel = Instance.new("TextLabel")
+                NameLabel.Size = UDim2.new(0.6, -5, 1, 0)
+                NameLabel.Position = UDim2.new(0, 5, 0, 0)
+                NameLabel.BackgroundTransparency = 1
+                NameLabel.Text = player.Name
+                NameLabel.TextColor3 = Color3.fromRGB(220, 220, 220)
+                NameLabel.Font = Enum.Font.Gotham
+                NameLabel.TextSize = 12
+                NameLabel.TextXAlignment = Enum.TextXAlignment.Left
+                NameLabel.Parent = Entry
+                
+                local ViewBtn = Instance.new("TextButton")
+                ViewBtn.Size = UDim2.new(0.18, -2, 0, 22)
+                ViewBtn.Position = UDim2.new(0.6, 2, 0.5, -11)
+                ViewBtn.BackgroundColor3 = Color3.fromRGB(70, 100, 70)
+                ViewBtn.Text = "VIEW"
+                ViewBtn.TextColor3 = Color3.fromRGB(240, 240, 240)
+                ViewBtn.Font = Enum.Font.Gotham
+                ViewBtn.TextSize = 11
+                ViewBtn.Parent = Entry
+                
+                local TPBtn = Instance.new("TextButton")
+                TPBtn.Size = UDim2.new(0.18, -2, 0, 22)
+                TPBtn.Position = UDim2.new(0.8, 2, 0.5, -11)
+                TPBtn.BackgroundColor3 = Color3.fromRGB(70, 70, 110)
+                TPBtn.Text = "TP"
+                TPBtn.TextColor3 = Color3.fromRGB(240, 240, 240)
+                TPBtn.Font = Enum.Font.Gotham
+                TPBtn.TextSize = 11
+                TPBtn.Parent = Entry
+                
+                ViewBtn.MouseButton1Click:Connect(function()
+                    if player.Character and player.Character:FindFirstChildOfClass("Humanoid") then
+                        workspace.CurrentCamera.CameraSubject = player.Character:FindFirstChildOfClass("Humanoid")
+                        if StopViewBtn then
+                            StopViewBtn.Text = "STOP: " .. player.Name
+                        end
+                    end
+                end)
+                
+                TPBtn.MouseButton1Click:Connect(function()
+                    if player.Character and player.Character:FindFirstChild("HumanoidRootPart") and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
+                        LocalPlayer.Character.HumanoidRootPart.CFrame = player.Character.HumanoidRootPart.CFrame + Vector3.new(0, 3, 0)
+                    end
+                end)
+            end
+        end
+    end
+    
+    PlayerList.CanvasSize = UDim2.new(0, 0, 0, count * 35)
+end
+
+-- ===== CREATE NICXPREMIUM GUI =====
+local function createGUI()
+    playExecuteSound()
+
+    -- Create Main GUI
+    ScreenGui = Instance.new("ScreenGui")
+    ScreenGui.Name = "NicxPremium"
+    ScreenGui.Parent = CoreGui
+    ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+
+    MainFrame = Instance.new("Frame")
+    MainFrame.Size = UDim2.new(0, 350, 0, 500)
+    MainFrame.Position = UDim2.new(0.5, -175, 0.5, -250)
+    MainFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
+    MainFrame.BorderSizePixel = 0
+    MainFrame.Parent = ScreenGui
+
+    local mainCorner = Instance.new("UICorner")
+    mainCorner.CornerRadius = UDim.new(0, 8)
+    mainCorner.Parent = MainFrame
+
+    local mainStroke = Instance.new("UIStroke")
+    mainStroke.Color = Color3.fromRGB(80, 80, 100)
+    mainStroke.Thickness = 2
+    mainStroke.Parent = MainFrame
+
+    -- Header
+    local Header = Instance.new("Frame")
+    Header.Size = UDim2.new(1, 0, 0, 80)
+    Header.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
+    Header.BorderSizePixel = 0
+    Header.Parent = MainFrame
+
+    local headerCorner = Instance.new("UICorner")
+    headerCorner.CornerRadius = UDim.new(0, 8)
+    headerCorner.Parent = Header
+
+    local IconImage = Instance.new("ImageLabel")
+    IconImage.Size = UDim2.new(0, 60, 0, 60)
+    IconImage.Position = UDim2.new(0, 10, 0, 10)
+    IconImage.BackgroundColor3 = Color3.fromRGB(40, 40, 45)
+    IconImage.BorderSizePixel = 0
+    IconImage.Image = "rbxassetid://5221309368"
+    IconImage.Parent = Header
+
+    local iconCorner = Instance.new("UICorner")
+    iconCorner.CornerRadius = UDim.new(0, 6)
+    iconCorner.Parent = IconImage
+
+    local Title = Instance.new("TextLabel")
+    Title.Size = UDim2.new(1, -80, 1, 0)
+    Title.Position = UDim2.new(0, 80, 0, 0)
+    Title.BackgroundTransparency = 1
+    Title.Text = "NICX PREMIUM"
+    Title.TextColor3 = Color3.fromRGB(255, 105, 180)
+    Title.Font = Enum.Font.GothamBold
+    Title.TextSize = 20
+    Title.TextXAlignment = Enum.TextXAlignment.Left
+    Title.Parent = Header
+
+    local Subtitle = Instance.new("TextLabel")
+    Subtitle.Size = UDim2.new(1, -80, 0, 20)
+    Subtitle.Position = UDim2.new(0, 80, 0, 40)
+    Subtitle.BackgroundTransparency = 1
+    Subtitle.Text = "Premium Script Hub"
+    Subtitle.TextColor3 = Color3.fromRGB(200, 200, 200)
+    Subtitle.Font = Enum.Font.Gotham
+    Subtitle.TextSize = 12
+    Subtitle.TextXAlignment = Enum.TextXAlignment.Left
+    Subtitle.Parent = Header
+
+    -- Tabs - 4 tabs only: LEGIT, REACH, QUICK TP, SERVER/SETTINGS
+    local TabsFrame = Instance.new("Frame")
+    TabsFrame.Size = UDim2.new(1, 0, 0, 40)
+    TabsFrame.Position = UDim2.new(0, 0, 0, 80)
+    TabsFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
+    TabsFrame.BorderSizePixel = 0
+    TabsFrame.Parent = MainFrame
+
+    local LegitTab = Instance.new("TextButton")
+    LegitTab.Size = UDim2.new(0.25, 0, 1, 0)
+    LegitTab.Position = UDim2.new(0, 0, 0, 0)
+    LegitTab.BackgroundColor3 = Color3.fromRGB(40, 40, 45)
+    LegitTab.Text = "LEGIT"
+    LegitTab.TextColor3 = Color3.fromRGB(255, 105, 180)
+    LegitTab.Font = Enum.Font.GothamBold
+    LegitTab.TextSize = 12
+    LegitTab.Parent = TabsFrame
+
+    local ReachTab = Instance.new("TextButton")
+    ReachTab.Size = UDim2.new(0.25, 0, 1, 0)
+    ReachTab.Position = UDim2.new(0.25, 0, 0, 0)
+    ReachTab.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
+    ReachTab.Text = "REACH"
+    ReachTab.TextColor3 = Color3.fromRGB(180, 180, 180)
+    ReachTab.Font = Enum.Font.GothamBold
+    ReachTab.TextSize = 12
+    ReachTab.Parent = TabsFrame
+
+    local QuickTPTab = Instance.new("TextButton")
+    QuickTPTab.Size = UDim2.new(0.25, 0, 1, 0)
+    QuickTPTab.Position = UDim2.new(0.5, 0, 0, 0)
+    QuickTPTab.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
+    QuickTPTab.Text = "QUICK TP"
+    QuickTPTab.TextColor3 = Color3.fromRGB(180, 180, 180)
+    QuickTPTab.Font = Enum.Font.GothamBold
+    QuickTPTab.TextSize = 12
+    QuickTPTab.Parent = TabsFrame
+
+    local ServerSettingsTab = Instance.new("TextButton")
+    ServerSettingsTab.Size = UDim2.new(0.25, 0, 1, 0)
+    ServerSettingsTab.Position = UDim2.new(0.75, 0, 0, 0)
+    ServerSettingsTab.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
+    ServerSettingsTab.Text = "SERVER"
+    ServerSettingsTab.TextColor3 = Color3.fromRGB(180, 180, 180)
+    ServerSettingsTab.Font = Enum.Font.GothamBold
+    ServerSettingsTab.TextSize = 12
+    ServerSettingsTab.Parent = TabsFrame
+
+    -- Content Frame
+    local ContentFrame = Instance.new("Frame")
+    ContentFrame.Size = UDim2.new(1, 0, 1, -120)
+    ContentFrame.Position = UDim2.new(0, 0, 0, 120)
+    ContentFrame.BackgroundTransparency = 1
+    ContentFrame.Parent = MainFrame
+
+    -- LEGIT TAB CONTENT
+    LegitContent = Instance.new("Frame")
+    LegitContent.Size = UDim2.new(1, 0, 1, 0)
+    LegitContent.BackgroundTransparency = 1
+    LegitContent.Visible = true
+    LegitContent.Parent = ContentFrame
+
+    -- AIM MODE Section
+    local ModeLabel = Instance.new("TextLabel")
+    ModeLabel.Size = UDim2.new(1, -20, 0, 25)
+    ModeLabel.Position = UDim2.new(0, 10, 0, 10)
+    ModeLabel.BackgroundTransparency = 1
+    ModeLabel.Text = "AIM MODE:"
+    ModeLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    ModeLabel.Font = Enum.Font.GothamBold
+    ModeLabel.TextSize = 14
+    ModeLabel.TextXAlignment = Enum.TextXAlignment.Left
+    ModeLabel.Parent = LegitContent
+
+    local BalancedBtn = Instance.new("TextButton")
+    BalancedBtn.Size = UDim2.new(0.3, -5, 0, 25)
+    BalancedBtn.Position = UDim2.new(0, 10, 0, 40)
+    BalancedBtn.Text = "BALANCED"
+    BalancedBtn.BackgroundColor3 = Color3.fromRGB(0, 120, 60)
+    BalancedBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    BalancedBtn.Font = Enum.Font.GothamBold
+    BalancedBtn.TextSize = 11
+    BalancedBtn.Parent = LegitContent
+
+    local AggressiveBtn = Instance.new("TextButton")
+    AggressiveBtn.Size = UDim2.new(0.3, -5, 0, 25)
+    AggressiveBtn.Position = UDim2.new(0.33, 5, 0, 40)
+    AggressiveBtn.Text = "AGGRESSIVE"
+    AggressiveBtn.BackgroundColor3 = Color3.fromRGB(120, 80, 0)
+    AggressiveBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    AggressiveBtn.Font = Enum.Font.GothamBold
+    AggressiveBtn.TextSize = 11
+    AggressiveBtn.Parent = LegitContent
+
+    local DirectBtn = Instance.new("TextButton")
+    DirectBtn.Size = UDim2.new(0.3, -5, 0, 25)
+    DirectBtn.Position = UDim2.new(0.66, 10, 0, 40)
+    DirectBtn.Text = "DIRECT"
+    DirectBtn.BackgroundColor3 = Color3.fromRGB(120, 0, 0)
+    DirectBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    DirectBtn.Font = Enum.Font.GothamBold
+    DirectBtn.TextSize = 11
+    DirectBtn.Parent = LegitContent
+
+    -- Settings Grid
+    local DistanceLabel = Instance.new("TextLabel")
+    DistanceLabel.Size = UDim2.new(0.3, -5, 0, 20)
+    DistanceLabel.Position = UDim2.new(0, 10, 0, 75)
+    DistanceLabel.BackgroundTransparency = 1
+    DistanceLabel.Text = "12"
+    DistanceLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    DistanceLabel.Font = Enum.Font.GothamBold
+    DistanceLabel.TextSize = 14
+    DistanceLabel.Parent = LegitContent
+
+    local SmoothnessLabel = Instance.new("TextLabel")
+    SmoothnessLabel.Size = UDim2.new(0.3, -5, 0, 20)
+    SmoothnessLabel.Position = UDim2.new(0.33, 5, 0, 75)
+    SmoothnessLabel.BackgroundTransparency = 1
+    SmoothnessLabel.Text = "0.3"
+    SmoothnessLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    SmoothnessLabel.Font = Enum.Font.GothamBold
+    SmoothnessLabel.TextSize = 14
+    SmoothnessLabel.Parent = LegitContent
+
+    local JiggleLabel = Instance.new("TextLabel")
+    JiggleLabel.Size = UDim2.new(0.3, -5, 0, 20)
+    JiggleLabel.Position = UDim2.new(0.66, 10, 0, 75)
+    JiggleLabel.BackgroundTransparency = 1
+    JiggleLabel.Text = "1.5"
+    JiggleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    JiggleLabel.Font = Enum.Font.GothamBold
+    JiggleLabel.TextSize = 14
+    JiggleLabel.Parent = LegitContent
+
+    DistanceBox = Instance.new("TextBox")
+    DistanceBox.Size = UDim2.new(0.3, -5, 0, 25)
+    DistanceBox.Position = UDim2.new(0, 10, 0, 95)
+    DistanceBox.BackgroundColor3 = Color3.fromRGB(40, 40, 45)
+    DistanceBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+    DistanceBox.Font = Enum.Font.Gotham
+    DistanceBox.TextSize = 12
+    DistanceBox.PlaceholderText = "Distance"
+    DistanceBox.Text = "12"
+    DistanceBox.Parent = LegitContent
+
+    SmoothnessBox = Instance.new("TextBox")
+    SmoothnessBox.Size = UDim2.new(0.3, -5, 0, 25)
+    SmoothnessBox.Position = UDim2.new(0.33, 5, 0, 95)
+    SmoothnessBox.BackgroundColor3 = Color3.fromRGB(40, 40, 45)
+    SmoothnessBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+    SmoothnessBox.Font = Enum.Font.Gotham
+    SmoothnessBox.TextSize = 12
+    SmoothnessBox.PlaceholderText = "Smoothness"
+    SmoothnessBox.Text = "0.3"
+    SmoothnessBox.Parent = LegitContent
+
+    JiggleBox = Instance.new("TextBox")
+    JiggleBox.Size = UDim2.new(0.3, -5, 0, 25)
+    JiggleBox.Position = UDim2.new(0.66, 10, 0, 95)
+    JiggleBox.BackgroundColor3 = Color3.fromRGB(40, 40, 45)
+    JiggleBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+    JiggleBox.Font = Enum.Font.Gotham
+    JiggleBox.TextSize = 12
+    JiggleBox.PlaceholderText = "Jiggle"
+    JiggleBox.Text = "1.5"
+    JiggleBox.Parent = LegitContent
+
+    -- Key and Toggle Section
+    KeybindBtn = Instance.new("TextButton")
+    KeybindBtn.Size = UDim2.new(0.45, -5, 0, 30)
+    KeybindBtn.Position = UDim2.new(0, 10, 0, 130)
+    KeybindBtn.Text = "KEY: Q"
+    KeybindBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 80)
+    KeybindBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    KeybindBtn.Font = Enum.Font.GothamBold
+    KeybindBtn.TextSize = 12
+    KeybindBtn.Parent = LegitContent
+
+    ToggleAimBtn = Instance.new("TextButton")
+    ToggleAimBtn.Size = UDim2.new(0.45, -5, 0, 30)
+    ToggleAimBtn.Position = UDim2.new(0.55, 10, 0, 130)
+    ToggleAimBtn.Text = "AIM: ON"
+    ToggleAimBtn.BackgroundColor3 = Color3.fromRGB(0, 120, 0)
+    ToggleAimBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    ToggleAimBtn.Font = Enum.Font.GothamBold
+    ToggleAimBtn.TextSize = 12
+    ToggleAimBtn.Parent = LegitContent
+
+    StatusLabel = Instance.new("TextLabel")
+    StatusLabel.Size = UDim2.new(1, -20, 0, 40)
+    StatusLabel.Position = UDim2.new(0, 10, 1, -50)
+    StatusLabel.BackgroundTransparency = 1
+    StatusLabel.Text = "Hold Q to activate aiming"
+    StatusLabel.TextColor3 = Color3.fromRGB(180, 230, 255)
+    StatusLabel.Font = Enum.Font.Gotham
+    StatusLabel.TextSize = 12
+    StatusLabel.TextXAlignment = Enum.TextXAlignment.Left
+    StatusLabel.Parent = LegitContent
+
+    -- REACH TAB CONTENT
+    ReachContent = Instance.new("Frame")
+    ReachContent.Size = UDim2.new(1, 0, 1, 0)
+    ReachContent.BackgroundTransparency = 1
+    ReachContent.Visible = false
+    ReachContent.Parent = ContentFrame
+
+    ReachBox = Instance.new("TextBox")
+    ReachBox.Size = UDim2.new(1, -20, 0, 35)
+    ReachBox.Position = UDim2.new(0, 10, 0, 20)
+    ReachBox.BackgroundColor3 = Color3.fromRGB(40, 40, 45)
+    ReachBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+    ReachBox.Font = Enum.Font.Gotham
+    ReachBox.TextSize = 12
+    ReachBox.PlaceholderText = "Enter reach value..."
+    ReachBox.Text = "0"  -- Set to 0 by default
+    ReachBox.Parent = ReachContent
+
+    ReachToggle = Instance.new("TextButton")
+    ReachToggle.Size = UDim2.new(1, -20, 0, 35)
+    ReachToggle.Position = UDim2.new(0, 10, 0, 65)
+    ReachToggle.BackgroundColor3 = Color3.fromRGB(100, 60, 60)  -- Red since it's off by default
+    ReachToggle.Text = "REACH: OFF"  -- Off by default
+    ReachToggle.TextColor3 = Color3.fromRGB(255, 255, 255)
+    ReachToggle.Font = Enum.Font.GothamBold
+    ReachToggle.TextSize = 12
+    ReachToggle.Parent = ReachContent
+
+    AutoClickerToggle = Instance.new("TextButton")
+    AutoClickerToggle.Size = UDim2.new(1, -20, 0, 35)
+    AutoClickerToggle.Position = UDim2.new(0, 10, 0, 110)
+    AutoClickerToggle.BackgroundColor3 = Color3.fromRGB(100, 60, 60)
+    AutoClickerToggle.Text = "AUTO-CLICKER: OFF"
+    AutoClickerToggle.TextColor3 = Color3.fromRGB(255, 255, 255)
+    AutoClickerToggle.Font = Enum.Font.GothamBold
+    AutoClickerToggle.TextSize = 12
+    AutoClickerToggle.Parent = ReachContent
+
+    ReachStatus = Instance.new("TextLabel")
+    ReachStatus.Size = UDim2.new(1, -20, 0, 60)
+    ReachStatus.Position = UDim2.new(0, 10, 1, -70)
+    ReachStatus.BackgroundTransparency = 1
+    ReachStatus.Text = "REACH: Disabled by default for safety"
+    ReachStatus.TextColor3 = Color3.fromRGB(255, 150, 150)
+    ReachStatus.Font = Enum.Font.Gotham
+    ReachStatus.TextSize = 12
+    ReachStatus.TextXAlignment = Enum.TextXAlignment.Left
+    ReachStatus.Parent = ReachContent
+
+    -- QUICK TP TAB CONTENT
+    QuickTPContent = Instance.new("Frame")
+    QuickTPContent.Size = UDim2.new(1, 0, 1, 0)
+    QuickTPContent.BackgroundTransparency = 1
+    QuickTPContent.Visible = false
+    QuickTPContent.Parent = ContentFrame
+
+    PlayerSearch = Instance.new("TextBox")
+    PlayerSearch.Size = UDim2.new(1, -20, 0, 30)
+    PlayerSearch.Position = UDim2.new(0, 10, 0, 10)
+    PlayerSearch.BackgroundColor3 = Color3.fromRGB(40, 40, 45)
+    PlayerSearch.TextColor3 = Color3.fromRGB(255, 255, 255)
+    PlayerSearch.Font = Enum.Font.Gotham
+    PlayerSearch.TextSize = 12
+    PlayerSearch.PlaceholderText = "Search players..."
+    PlayerSearch.Text = ""
+    PlayerSearch.Parent = QuickTPContent
+
+    PlayerList = Instance.new("ScrollingFrame")
+    PlayerList.Size = UDim2.new(1, -20, 1, -90)
+    PlayerList.Position = UDim2.new(0, 10, 0, 50)
+    PlayerList.BackgroundColor3 = Color3.fromRGB(35, 35, 40)
+    PlayerList.BorderSizePixel = 0
+    PlayerList.ScrollBarThickness = 4
+    PlayerList.Parent = QuickTPContent
+
+    local ListLayout = Instance.new("UIListLayout")
+    ListLayout.Padding = UDim.new(0, 5)
+    ListLayout.Parent = PlayerList
+
+    StopViewBtn = Instance.new("TextButton")
+    StopViewBtn.Size = UDim2.new(1, -20, 0, 35)
+    StopViewBtn.Position = UDim2.new(0, 10, 1, -45)
+    StopViewBtn.BackgroundColor3 = Color3.fromRGB(80, 60, 60)
+    StopViewBtn.Text = "STOP VIEWING"
+    StopViewBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    StopViewBtn.Font = Enum.Font.GothamBold
+    StopViewBtn.TextSize = 12
+    StopViewBtn.Parent = QuickTPContent
+
+    -- SERVER/SETTINGS TAB CONTENT (Combined)
+    ServerSettingsContent = Instance.new("Frame")
+    ServerSettingsContent.Size = UDim2.new(1, 0, 1, 0)
+    ServerSettingsContent.BackgroundTransparency = 1
+    ServerSettingsContent.Visible = false
+    ServerSettingsContent.Parent = ContentFrame
+
+    -- Server Section
+    local ServerLabel = Instance.new("TextLabel")
+    ServerLabel.Size = UDim2.new(1, -20, 0, 25)
+    ServerLabel.Position = UDim2.new(0, 10, 0, 10)
+    ServerLabel.BackgroundTransparency = 1
+    ServerLabel.Text = "SERVER TOOLS:"
+    ServerLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    ServerLabel.Font = Enum.Font.GothamBold
+    ServerLabel.TextSize = 14
+    ServerLabel.TextXAlignment = Enum.TextXAlignment.Left
+    ServerLabel.Parent = ServerSettingsContent
+
+    local ServerLinkBtn = Instance.new("TextButton")
+    ServerLinkBtn.Size = UDim2.new(1, -20, 0, 35)
+    ServerLinkBtn.Position = UDim2.new(0, 10, 0, 40)
+    ServerLinkBtn.BackgroundColor3 = Color3.fromRGB(0, 90, 180)
+    ServerLinkBtn.Text = "COPY SERVER JOIN LINK"
+    ServerLinkBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    ServerLinkBtn.Font = Enum.Font.GothamBold
+    ServerLinkBtn.TextSize = 12
+    ServerLinkBtn.Parent = ServerSettingsContent
+
+    -- Settings Section
+    local SettingsLabel = Instance.new("TextLabel")
+    SettingsLabel.Size = UDim2.new(1, -20, 0, 25)
+    SettingsLabel.Position = UDim2.new(0, 10, 0, 85)
+    SettingsLabel.BackgroundTransparency = 1
+    SettingsLabel.Text = "SETTINGS:"
+    SettingsLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    SettingsLabel.Font = Enum.Font.GothamBold
+    SettingsLabel.TextSize = 14
+    SettingsLabel.TextXAlignment = Enum.TextXAlignment.Left
+    SettingsLabel.Parent = ServerSettingsContent
+
+    -- Auto-Chase Section
+    local ChaseLabel = Instance.new("TextLabel")
+    ChaseLabel.Size = UDim2.new(1, -20, 0, 20)
+    ChaseLabel.Position = UDim2.new(0, 10, 0, 115)
+    ChaseLabel.BackgroundTransparency = 1
+    ChaseLabel.Text = "Auto-Chase:"
+    ChaseLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+    ChaseLabel.Font = Enum.Font.Gotham
+    ChaseLabel.TextSize = 12
+    ChaseLabel.TextXAlignment = Enum.TextXAlignment.Left
+    ChaseLabel.Parent = ServerSettingsContent
+
+    ChaseBox = Instance.new("TextBox")
+    ChaseBox.Size = UDim2.new(0.6, -5, 0, 25)
+    ChaseBox.Position = UDim2.new(0, 10, 0, 140)
+    ChaseBox.BackgroundColor3 = Color3.fromRGB(40, 40, 45)
+    ChaseBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+    ChaseBox.Font = Enum.Font.Gotham
+    ChaseBox.TextSize = 12
+    ChaseBox.PlaceholderText = "Enter player name..."
+    ChaseBox.Text = ""
+    ChaseBox.Parent = ServerSettingsContent
+
+    StartChaseBtn = Instance.new("TextButton")
+    StartChaseBtn.Size = UDim2.new(0.35, -5, 0, 25)
+    StartChaseBtn.Position = UDim2.new(0.65, 10, 0, 140)
+    StartChaseBtn.BackgroundColor3 = Color3.fromRGB(60, 120, 60)
+    StartChaseBtn.Text = "START CHASE"
+    StartChaseBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    StartChaseBtn.Font = Enum.Font.GothamBold
+    StartChaseBtn.TextSize = 12
+    StartChaseBtn.Parent = ServerSettingsContent
+
+    StopChaseBtn = Instance.new("TextButton")
+    StopChaseBtn.Size = UDim2.new(1, -20, 0, 25)
+    StopChaseBtn.Position = UDim2.new(0, 10, 0, 175)
+    StopChaseBtn.BackgroundColor3 = Color3.fromRGB(120, 60, 60)
+    StopChaseBtn.Text = "STOP CHASE"
+    StopChaseBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    StopChaseBtn.Font = Enum.Font.GothamBold
+    StopChaseBtn.TextSize = 12
+    StopChaseBtn.Parent = ServerSettingsContent
+
+    -- Graphics Settings
+    LowGraphicsBtn = Instance.new("TextButton")
+    LowGraphicsBtn.Size = UDim2.new(1, -20, 0, 30)
+    LowGraphicsBtn.Position = UDim2.new(0, 10, 0, 210)
+    LowGraphicsBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 80)
+    LowGraphicsBtn.Text = "APPLY LOW GRAPHICS"
+    LowGraphicsBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    LowGraphicsBtn.Font = Enum.Font.GothamBold
+    LowGraphicsBtn.TextSize = 12
+    LowGraphicsBtn.Parent = ServerSettingsContent
+
+    AntiIdleBtn = Instance.new("TextButton")
+    AntiIdleBtn.Size = UDim2.new(1, -20, 0, 30)
+    AntiIdleBtn.Position = UDim2.new(0, 10, 0, 250)
+    AntiIdleBtn.BackgroundColor3 = Color3.fromRGB(60, 120, 60)
+    AntiIdleBtn.Text = "ANTI-IDLE: ON"
+    AntiIdleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    AntiIdleBtn.Font = Enum.Font.GothamBold
+    AntiIdleBtn.TextSize = 12
+    AntiIdleBtn.Parent = ServerSettingsContent
+
+    ServerSettingsStatus = Instance.new("TextLabel")
+    ServerSettingsStatus.Size = UDim2.new(1, -20, 0, 80)
+    ServerSettingsStatus.Position = UDim2.new(0, 10, 1, -90)
+    ServerSettingsStatus.BackgroundTransparency = 1
+    ServerSettingsStatus.Text = "Auto-mod detection active (30s)\nNo mods detected"
+    ServerSettingsStatus.TextColor3 = Color3.fromRGB(180, 230, 255)
+    ServerSettingsStatus.Font = Enum.Font.Gotham
+    ServerSettingsStatus.TextSize = 12
+    ServerSettingsStatus.TextXAlignment = Enum.TextXAlignment.Left
+    ServerSettingsStatus.TextYAlignment = Enum.TextYAlignment.Top
+    ServerSettingsStatus.TextWrapped = true
+    ServerSettingsStatus.Parent = ServerSettingsContent
+
+    -- ===== EVENT CONNECTIONS =====
+
+    -- Tab Switching
+    LegitTab.MouseButton1Click:Connect(function()
+        LegitContent.Visible = true
+        ReachContent.Visible = false
+        QuickTPContent.Visible = false
+        ServerSettingsContent.Visible = false
+        LegitTab.BackgroundColor3 = Color3.fromRGB(40, 40, 45)
+        LegitTab.TextColor3 = Color3.fromRGB(255, 105, 180)
+        ReachTab.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
+        ReachTab.TextColor3 = Color3.fromRGB(180, 180, 180)
+        QuickTPTab.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
+        QuickTPTab.TextColor3 = Color3.fromRGB(180, 180, 180)
+        ServerSettingsTab.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
+        ServerSettingsTab.TextColor3 = Color3.fromRGB(180, 180, 180)
+    end)
+
+    ReachTab.MouseButton1Click:Connect(function()
+        LegitContent.Visible = false
+        ReachContent.Visible = true
+        QuickTPContent.Visible = false
+        ServerSettingsContent.Visible = false
+        LegitTab.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
+        LegitTab.TextColor3 = Color3.fromRGB(180, 180, 180)
+        ReachTab.BackgroundColor3 = Color3.fromRGB(40, 40, 45)
+        ReachTab.TextColor3 = Color3.fromRGB(255, 150, 150)
+        QuickTPTab.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
+        QuickTPTab.TextColor3 = Color3.fromRGB(180, 180, 180)
+        ServerSettingsTab.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
+        ServerSettingsTab.TextColor3 = Color3.fromRGB(180, 180, 180)
+    end)
+
+    QuickTPTab.MouseButton1Click:Connect(function()
+        LegitContent.Visible = false
+        ReachContent.Visible = false
+        QuickTPContent.Visible = true
+        ServerSettingsContent.Visible = false
+        LegitTab.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
+        LegitTab.TextColor3 = Color3.fromRGB(180, 180, 180)
+        ReachTab.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
+        ReachTab.TextColor3 = Color3.fromRGB(180, 180, 180)
+        QuickTPTab.BackgroundColor3 = Color3.fromRGB(40, 40, 45)
+        QuickTPTab.TextColor3 = Color3.fromRGB(150, 200, 255)
+        ServerSettingsTab.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
+        ServerSettingsTab.TextColor3 = Color3.fromRGB(180, 180, 180)
+        updatePlayerList("")
+    end)
+
+    ServerSettingsTab.MouseButton1Click:Connect(function()
+        LegitContent.Visible = false
+        ReachContent.Visible = false
+        QuickTPContent.Visible = false
+        ServerSettingsContent.Visible = true
+        LegitTab.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
+        LegitTab.TextColor3 = Color3.fromRGB(180, 180, 180)
+        ReachTab.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
+        ReachTab.TextColor3 = Color3.fromRGB(180, 180, 180)
+        QuickTPTab.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
+        QuickTPTab.TextColor3 = Color3.fromRGB(180, 180, 180)
+        ServerSettingsTab.BackgroundColor3 = Color3.fromRGB(40, 40, 45)
+        ServerSettingsTab.TextColor3 = Color3.fromRGB(150, 200, 255)
+    end)
+
+    -- Legit Tab Events
+    BalancedBtn.MouseButton1Click:Connect(function()
+        legitSettings.Mode = "Balanced"
+        applyModeSettings("Balanced")
+        BalancedBtn.BackgroundColor3 = Color3.fromRGB(0, 120, 60)
+        AggressiveBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 80)
+        DirectBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 80)
+        StatusLabel.Text = "Balanced Mode - Smooth aiming"
+    end)
+
+    AggressiveBtn.MouseButton1Click:Connect(function()
+        legitSettings.Mode = "Aggressive"
+        applyModeSettings("Aggressive")
+        BalancedBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 80)
+        AggressiveBtn.BackgroundColor3 = Color3.fromRGB(120, 80, 0)
+        DirectBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 80)
+        StatusLabel.Text = "Aggressive Mode - Strong jiggle"
+    end)
+
+    DirectBtn.MouseButton1Click:Connect(function()
+        legitSettings.Mode = "Direct"
+        applyModeSettings("Direct")
+        BalancedBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 80)
+        AggressiveBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 80)
+        DirectBtn.BackgroundColor3 = Color3.fromRGB(120, 0, 0)
+        StatusLabel.Text = "Direct Mode - Max jiggle power"
+    end)
+
+    ToggleAimBtn.MouseButton1Click:Connect(function()
+        legitSettings.Enabled = not legitSettings.Enabled
+        ToggleAimBtn.Text = legitSettings.Enabled and "AIM: ON" or "AIM: OFF"
+        ToggleAimBtn.BackgroundColor3 = legitSettings.Enabled and Color3.fromRGB(0, 120, 0) or Color3.fromRGB(120, 0, 0)
+        if legitSettings.Enabled then
+            StatusLabel.Text = "Hold " .. legitSettings.ActivationKey.Name .. " to activate"
+        else
+            StatusLabel.Text = "AIMING DISABLED"
+        end
+    end)
+
+    DistanceBox.FocusLost:Connect(function(enterPressed)
+        if enterPressed then
+            local value = tonumber(DistanceBox.Text)
+            if value and value >= 8 and value <= 15 then
+                legitSettings.MaxDistance = value
+                DistanceLabel.Text = tostring(value)
+            else
+                DistanceBox.Text = tostring(legitSettings.MaxDistance)
+            end
+        end
+    end)
+
+    SmoothnessBox.FocusLost:Connect(function(enterPressed)
+        if enterPressed then
+            local value = tonumber(SmoothnessBox.Text)
+            if value and value >= 0.1 and value <= 1.0 then
+                legitSettings.Smoothness = value
+                SmoothnessLabel.Text = tostring(value)
+            else
+                SmoothnessBox.Text = tostring(legitSettings.Smoothness)
+            end
+        end
+    end)
+
+    JiggleBox.FocusLost:Connect(function(enterPressed)
+        if enterPressed then
+            local value = tonumber(JiggleBox.Text)
+            if value and value >= 0.5 and value <= 5.0 then
+                legitSettings.JiggleIntensity = value
+                JiggleLabel.Text = tostring(value)
+            else
+                JiggleBox.Text = tostring(legitSettings.JiggleIntensity)
+            end
+        end
+    end)
+
+    KeybindBtn.MouseButton1Click:Connect(function()
+        changingKeybind = true
+        KeybindBtn.Text = "PRESS KEY..."
+        KeybindBtn.BackgroundColor3 = Color3.fromRGB(120, 80, 0)
+        StatusLabel.Text = "Press any key to set new bind"
+    end)
+
+    -- REACH Tab Events
+    ReachBox.FocusLost:Connect(function(enterPressed)
+        if enterPressed then
+            local num = tonumber(ReachBox.Text)
+            if num then 
+                _G.Reach = num
+                ReachStatus.Text = "Reach set to: " .. num
+            end
+        end
+    end)
+
+    ReachToggle.MouseButton1Click:Connect(function()
+        _G.ReachOff = not _G.ReachOff
+        ReachToggle.BackgroundColor3 = _G.ReachOff and Color3.fromRGB(100, 60, 60) or Color3.fromRGB(60, 120, 60)
+        ReachToggle.Text = _G.ReachOff and "REACH: OFF" or "REACH: ON"
+        ReachStatus.Text = _G.ReachOff and "Reach disabled" or "Reach enabled: " .. _G.Reach
+    end)
+
+    AutoClickerToggle.MouseButton1Click:Connect(function()
+        _G.AutoClicker = not _G.AutoClicker
+        AutoClickerToggle.BackgroundColor3 = _G.AutoClicker and Color3.fromRGB(60, 120, 60) or Color3.fromRGB(100, 60, 60)
+        AutoClickerToggle.Text = _G.AutoClicker and "AUTO-CLICKER: ON" or "AUTO-CLICKER: OFF"
+        ReachStatus.Text = _G.AutoClicker and "Auto-clicker enabled" or "Auto-clicker disabled"
+    end)
+
+    -- Server/Settings Tab Events
+    ServerLinkBtn.MouseButton1Click:Connect(generateServerLink)
+
+    -- Quick TP Tab Events
+    PlayerSearch:GetPropertyChangedSignal("Text"):Connect(function()
+        updatePlayerList(PlayerSearch.Text)
+    end)
+
+    StopViewBtn.MouseButton1Click:Connect(function()
+        if LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid") then
+            workspace.CurrentCamera.CameraSubject = LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+            StopViewBtn.Text = "STOP VIEWING"
+        end
+    end)
+
+    -- Server/Settings Tab Events
+    StartChaseBtn.MouseButton1Click:Connect(function()
+        startChase(ChaseBox.Text)
+    end)
+
+    StopChaseBtn.MouseButton1Click:Connect(function()
+        stopChase()
+    end)
+
+    ChaseBox.FocusLost:Connect(function(enterPressed)
+        if enterPressed then
+            startChase(ChaseBox.Text)
+        end
+    end)
+
+    LowGraphicsBtn.MouseButton1Click:Connect(applyLowGraphics)
+
+    AntiIdleBtn.MouseButton1Click:Connect(function()
+        antiIdleEnabled = not antiIdleEnabled
+        AntiIdleBtn.BackgroundColor3 = antiIdleEnabled and Color3.fromRGB(60, 120, 60) or Color3.fromRGB(100, 60, 60)
+        AntiIdleBtn.Text = antiIdleEnabled and "ANTI-IDLE: ON" or "ANTI-IDLE: OFF"
+        ServerSettingsStatus.Text = antiIdleEnabled and "Anti-idle enabled" or "Anti-idle disabled"
+    end)
+
+    -- Dragging
+    local dragging, dragInput, dragStart, startPos
+    Header.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = true
+            dragStart = input.Position
+            startPos = MainFrame.Position
+            
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then
+                    dragging = false
+                end
+            end)
+        end
+    end)
+
+    Header.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement then
+            dragInput = input
+        end
+    end)
+
+    UserInputService.InputChanged:Connect(function(input)
+        if input == dragInput and dragging then
+            local delta = input.Position - dragStart
+            MainFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+        end
+    end)
+
+    -- Initialize default mode
+    applyModeSettings("Balanced")
+end
+
+-- ===== INITIALIZATION =====
+createGUI()
+setupReach()
+setupAutoClicker()
+setupAntiIdle()
+
+-- Auto Mod Detection Loop
+spawn(function()
+    while true do
+        checkForMods()
+        wait(30) -- Check every 30 seconds
+    end
+end)
+
+-- Input System - Keybinds
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+    
+    -- Toggle GUI visibility with Left Control
+    if input.KeyCode == GUI_HIDE_KEY then
+        if ScreenGui then
+            ScreenGui.Enabled = not ScreenGui.Enabled
+            if ScreenGui.Enabled then
+                showNotification("GUI Visible", Color3.fromRGB(100, 200, 255))
+            else
+                showNotification("GUI Hidden - Press Ctrl to show", Color3.fromRGB(200, 200, 100))
+            end
+        end
+    end
+    
+    if changingKeybind and input.UserInputType == Enum.UserInputType.Keyboard then
+        legitSettings.ActivationKey = input.KeyCode
+        if KeybindBtn then
+            KeybindBtn.Text = "KEY: " .. input.KeyCode.Name
+            KeybindBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 80)
+        end
+        if StatusLabel then
+            StatusLabel.Text = "Hold " .. input.KeyCode.Name .. " to activate"
+        end
+        changingKeybind = false
+    elseif input.KeyCode == legitSettings.ActivationKey then
+        activationKeyDown = true
+    end
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+    if input.KeyCode == legitSettings.ActivationKey then
+        activationKeyDown = false
+        if StatusLabel then
+            StatusLabel.Text = legitSettings.Mode .. " Mode - Ready"
+        end
+    end
+end)
+
+-- Legit Aiming Loop
+RunService.RenderStepped:Connect(function(deltaTime)
+    time = time + deltaTime
+    
+    if not legitSettings.Enabled or not LocalPlayer.Character or changingKeybind then
+        return
+    end
+    
+    local humanoid = LocalPlayer.Character:FindFirstChild("Humanoid")
+    local rootPart = LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    
+    if not humanoid or humanoid.Health <= 0 or not rootPart then
+        return
+    end
+    
+    if activationKeyDown then
+        local targetPlayer, distance = findClosestTarget()
+        
+        if targetPlayer and targetPlayer.Character then
+            local aimPosition = getAimPosition(targetPlayer.Character)
+            
+            if aimPosition then
+                if StatusLabel then
+                    StatusLabel.Text = "Targeting: " .. targetPlayer.Name .. " (" .. math.floor(distance) .. " studs)"
+                end
+                
+                local currentCamera = workspace.CurrentCamera
+                local newCFrame = applyJiggleEffect(aimPosition, currentCamera.CFrame, time)
+                
+                currentCamera.CFrame = newCFrame
+            end
+        else
+            if StatusLabel then
+                StatusLabel.Text = "No targets in range"
+            end
+        end
+    end
+end)
+
+-- Auto-Chase Loop
+RunService.Heartbeat:Connect(function()
+    if chasing then
+        if not currentTarget or not currentTarget.Parent then
+            currentTarget = findTarget(targetName)
+        end
+        moveToTarget(currentTarget)
+    end
+end)
+
+-- Player List Updates
+Players.PlayerAdded:Connect(function() 
+    if PlayerSearch then
+        updatePlayerList(PlayerSearch.Text) 
+    end
+end)
+
+Players.PlayerRemoving:Connect(function() 
+    if PlayerSearch then
+        updatePlayerList(PlayerSearch.Text) 
+    end
+end)
+
+-- Initial welcome notification
+delay(2, function()
+    showNotification("NicxPremium Loaded!\nPress Ctrl to hide/show GUI", Color3.fromRGB(255, 255, 100))
+end)
