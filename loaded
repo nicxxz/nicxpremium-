@@ -1,0 +1,85 @@
+--[[
+	╔══════════════════════════════════════╗
+	║             XN Loader               ║
+	║        Made by: @nicpls             ║
+	╚══════════════════════════════════════╝
+]]
+
+local Mercury = loadstring(game:HttpGet("https://raw.githubusercontent.com/jjengu/librarys/refs/heads/main/mercury/source.lua"))()
+
+local GUI = Mercury:Create{
+	Name = "XN Loader",
+	Size = UDim2.fromOffset(600, 400),
+	Theme = Mercury.Themes.Dark,
+	Link = "Made by @nicpls | discord.gg/9geZhfCbWS"
+}
+
+local function Notif(msg, duration)
+	GUI:Notification{
+		Title = "XN Loader",
+		Text  = msg,
+		Duration = duration or 3,
+		Callback = function() end
+	}
+end
+
+
+local SCRIPTS = {
+	{
+		tabName    = "NICXHUB",
+		scriptName = "Orignal script (maybe detected)",
+		desc       = "Load the nicxprem script",
+		url        = "https://raw.githubusercontent.com/nicxxz/nicxpremium-/refs/heads/main/nicxpremmm",
+	},
+	{
+		tabName    = "XN-HUB",
+		scriptName = "XN HUB",
+		desc       = "Load the XN HUB script",
+		url        = "https://raw.githubusercontent.com/nicxxz/nicxpremium-/refs/heads/main/2x1x1",
+	},
+	{
+		tabName    = "XN-custom",
+		scriptName = "Made by lave_01",
+		desc       = "Load the modified XN script by lave_01",
+		url        = "https://raw.githubusercontent.com/nicxxz/nicxpremium-/refs/heads/main/lave_01.lua",
+	},
+	{
+		tabName    = "XyrezReach",
+		scriptName = "XyrezReach",
+		desc       = "Load the Xyrez AutoRank reach script",
+		url        = "https://raw.githubusercontent.com/MaxicsSoft/XyrezAutoRank/main/StealTimeFromOthers.lua",
+	},
+}
+
+
+for _, entry in ipairs(SCRIPTS) do
+
+	local tab = GUI:Tab{
+		Name = entry.tabName,
+	}
+
+	-- Label showing the script name
+	tab:Label{
+		Name = entry.scriptName,
+	}
+
+	-- Launch button
+	tab:Button{
+		Name        = "▶  Launch " .. entry.scriptName,
+		Description = entry.desc,
+		Callback    = function()
+			Notif("Loading " .. entry.scriptName .. "...")
+			task.spawn(function()
+				local ok, err = pcall(function()
+					loadstring(game:HttpGet(entry.url, true))()
+				end)
+				if ok then
+					Notif(entry.scriptName .. " loaded successfully!", 4)
+				else
+					Notif("Error loading " .. entry.scriptName .. ": " .. tostring(err):sub(1, 60), 5)
+				end
+			end)
+		end
+	}
+
+end
